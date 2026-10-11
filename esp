@@ -1,0 +1,459 @@
+-- noob_meansss ESP  |  Drawing + Highlight fallback
+-- If Drawing fails, boxes/names still appear via Highlight & BillboardGui
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+
+local ESP = {
+    Enabled = true,
+    Box = true,
+    Tracer = true,
+    Name = true,
+    Distance = true,
+    TeamCheck = false,
+    MaxDistance = 5000,
+    BoxColor = Color3.fromRGB(255, 45, 85),
+    TracerColor = Color3.fromRGB(255, 70, 110),
+    NameColor = Color3.fromRGB(255, 255, 255),
+    Thickness = 1.6,
+}
+
+local drawings = {}       -- Drawing objects
+local highlights = {}     -- Highlight instances
+local billboards = {}     -- BillboardGui for names
+local useDrawing = true
+local guiVisible = true
+
+-- test Drawing once
+local function testDrawing()
+    local ok, err = pcall(function()
+        local t = Drawing.new("Line")
+        t:Remove()
+    end)
+    if not ok then
+        useDrawing = false
+        warn("[noob_meansss] Drawing API blocked → using Highlight fallback")
+    else
+        print("[noob_meansss] Drawing API ok")
+    end
+end
+testDrawing()
+
+local function safeRemove(obj)
+    pcall(function()
+        if typeof(obj) == "Instance" then
+            obj:Destroy()
+        elseif obj and obj.Remove then
+            obj:Remove()
+        end
+    end)
+end
+
+local function getRoot(char)
+    if not char then return nil end
+    return char:FindFirstChild("HumanoidRootPart")
+        or char:FindFirstChild("Torso")
+        or char:FindFirstChild("UpperTorso")
+        or char:FindFirstChild("LowerTorso")
+        or char.PrimaryPart
+end
+
+local function isAlive(char)
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then return hum.Health > 0 end
+    return getRoot(char) \~= nil
+end
+
+local function createFor(player)
+    if drawings[player] or highlights[player] then return end
+
+    if useDrawing then
+        local box = Drawing.new("Square")
+        box.Thickness = ESP.Thickness
+        box.Filled = false
+        box.Color = ESP.BoxColor
+        box.Visible = false
+
+        local tracer = Drawing.new("Line")
+        tracer.Thickness = ESP.Thickness
+        tracer.Color = ESP.TracerColor
+        tracer.Visible = false
+
+        local name = Drawing.new("Text")
+        name.Size = 14
+        name.Center = true
+        name.Outline = true
+        name.Color = ESP.NameColor
+        name.Visible = false
+
+        local dist = Drawing.new("Text")
+        dist.Size = 13
+        dist.Center = true
+        dist.Outline = true
+        dist.Color = ESP.NameColor
+        dist.Visible = false
+
+        drawings[player] = {Box = box, Tracer = tracer, Name = name, Dist = dist}
+    end
+
+    -- always create Highlight (works almost everywhere)
+    local hl = Instance.new("Highlight")
+    hl.FillColor = ESP.BoxColor
+    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+    hl.FillTransparency = 0.65
+    hl.OutlineTransparency = 0
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Enabled = false
+    highlights[player] = hl
+
+    -- Billboard for name + distance (fallback)
+    local bb = Instance.new("BillboardGui")
+    bb.Size = UDim2.new(0, 120, 0, 40)
+    bb.AlwaysOnTop = true
+    bb.StudsOffset = Vector3.new(0, 3.2, 0)
+    bb.Enabled = false
+
+    local nameLbl = Instance.new("TextLabel")
+    nameLbl.Size = UDim2.new(1, 0, 0.55, 0)
+    nameLbl.BackgroundTransparency = 1
+    nameLbl.TextColor3 = ESP.NameColor
+    nameLbl.TextStrokeTransparency = 0.4
+    nameLbl.Font = Enum.Font.GothamBold
+    nameLbl.TextSize = 14
+    nameLbl.Text = ""
+    nameLbl.Parent = bb
+
+    local distLbl = Instance.new("TextLabel")
+    distLbl.Size = UDim2.new(1, 0, 0.45, 0)
+    distLbl.Position = UDim2.new(0, 0, 0.55, 0)
+    distLbl.BackgroundTransparency = 1
+    distLbl.TextColor3 = Color3.fromRGB(200, 200, 200)
+    distLbl.TextStrokeTransparency = 0.5
+    distLbl.Font = Enum.Font.Gotham
+    distLbl.TextSize = 12
+    distLbl.Text = ""
+    distLbl.Parent = bb
+
+    billboards[player] = {Gui = bb, Name = nameLbl, Dist = distLbl}
+end
+
+local function cleanup(player)
+    if drawings[player] then
+        for _, o in pairs(drawings[player]) do safeRemove(o) end
+        drawings[player] = nil
+    end
+    if highlights[player] then
+        safeRemove(highlights[player])
+        highlights[player] = nil
+    end
+    if billboards[player] then
+        safeRemove(billboards[player].Gui)
+        billboards[player] = nil
+    end
+end
+
+local function hide(player)
+    local d = drawings[player]
+    if d then
+        d.Box.Visible = false
+        d.Tracer.Visible = false
+        d.Name.Visible = false
+        d.Dist.Visible = false
+    end
+    if highlights[player] then highlights[player].Enabled = false end
+    if billboards[player] then billboards[player].Gui.Enabled = false end
+end
+
+local function update()
+    if not ESP.Enabled then
+        for _, p in ipairs(Players:GetPlayers()) do hide(p) end
+        return
+    end
+
+    local screenSize = Camera.ViewportSize
+    local tracerOrigin = Vector2.new(screenSize.X / 2, screenSize.Y)
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+
+        local char = player.Character
+        if not char or not isAlive(char) then
+            hide(player)
+            continue
+        end
+
+        if ESP.TeamCheck and LocalPlayer.Team and player.Team and LocalPlayer.Team == player.Team then
+            hide(player)
+            continue
+        end
+
+        local root = getRoot(char)
+        if not root then
+            hide(player)
+            continue
+        end
+
+        createFor(player)
+
+        local distance = (root.Position - Camera.CFrame.Position).Magnitude
+        if distance > ESP.MaxDistance then
+            hide(player)
+            continue
+        end
+
+        -- Highlight (always)
+        local hl = highlights[player]
+        if hl then
+            hl.Adornee = char
+            hl.Parent = char
+            hl.Enabled = ESP.Box or ESP.Tracer
+            hl.FillColor = ESP.BoxColor
+        end
+
+        -- Billboard name/distance
+        local bb = billboards[player]
+        if bb then
+            bb.Gui.Adornee = root
+            bb.Gui.Parent = char
+            bb.Gui.Enabled = ESP.Name or ESP.Distance
+            if ESP.Name then
+                bb.Name.Text = player.DisplayName \~= "" and player.DisplayName or player.Name
+            else
+                bb.Name.Text = ""
+            end
+            if ESP.Distance then
+                bb.Dist.Text = math.floor(distance) .. " studs"
+            else
+                bb.Dist.Text = ""
+            end
+        end
+
+        -- Drawing (only if available)
+        if useDrawing and drawings[player] then
+            local d = drawings[player]
+            local ok, pos, onScreen = pcall(function()
+                return Camera:WorldToViewportPoint(root.Position)
+            end)
+
+            if ok and onScreen then
+                local head = char:FindFirstChild("Head")
+                local topY = head and Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.7, 0)).Y or pos.Y - 35
+                local bottomY = Camera:WorldToViewportPoint(root.Position - Vector3.new(0, 3, 0)).Y
+                local height = math.max(math.abs(topY - bottomY), 20)
+                local width = height * 0.55
+
+                if ESP.Box then
+                    d.Box.Size = Vector2.new(width, height)
+                    d.Box.Position = Vector2.new(pos.X - width/2, topY)
+                    d.Box.Visible = true
+                else
+                    d.Box.Visible = false
+                end
+
+                if ESP.Tracer then
+                    d.Tracer.From = tracerOrigin
+                    d.Tracer.To = Vector2.new(pos.X, bottomY)
+                    d.Tracer.Visible = true
+                else
+                    d.Tracer.Visible = false
+                end
+
+                if ESP.Name then
+                    d.Name.Text = player.DisplayName \~= "" and player.DisplayName or player.Name
+                    d.Name.Position = Vector2.new(pos.X, topY - 16)
+                    d.Name.Visible = true
+                else
+                    d.Name.Visible = false
+                end
+
+                if ESP.Distance then
+                    d.Dist.Text = "[" .. math.floor(distance) .. "]"
+                    d.Dist.Position = Vector2.new(pos.X, bottomY + 2)
+                    d.Dist.Visible = true
+                else
+                    d.Dist.Visible = false
+                end
+            else
+                hide(player)
+            end
+        end
+    end
+end
+
+-- character handling
+local function hookPlayer(player)
+    if player == LocalPlayer then return end
+    player.CharacterAdded:Connect(function()
+        task.wait(0.4)
+        createFor(player)
+    end)
+    if player.Character then
+        task.spawn(function()
+            task.wait(0.4)
+            createFor(player)
+        end)
+    end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do hookPlayer(p) end
+Players.PlayerAdded:Connect(hookPlayer)
+Players.PlayerRemoving:Connect(cleanup)
+
+RunService.RenderStepped:Connect(update)
+
+-- ===================== GUI =====================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "noob_meansss"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+pcall(function() ScreenGui.Parent = game:GetService("CoreGui") end)
+if not ScreenGui.Parent then
+    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local Main = Instance.new("Frame")
+Main.Size = UDim2.new(0, 210, 0, 292)
+Main.Position = UDim2.new(0, 18, 0.35, 0)
+Main.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Draggable = true
+Main.Parent = ScreenGui
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 12)
+
+local Accent = Instance.new("Frame")
+Accent.Size = UDim2.new(1, 0, 0, 3)
+Accent.BackgroundColor3 = Color3.fromRGB(255, 45, 85)
+Accent.BorderSizePixel = 0
+Accent.Parent = Main
+
+local Header = Instance.new("Frame")
+Header.Size = UDim2.new(1, 0, 0, 38)
+Header.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+Header.BorderSizePixel = 0
+Header.Parent = Main
+Instance.new("UICorner", Header).CornerRadius = UDim.new(0, 12)
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -50, 1, 0)
+Title.Position = UDim2.new(0, 14, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "noob_meansss"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 15
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Header
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 28, 0, 28)
+CloseBtn.Position = UDim2.new(1, -34, 0, 5)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(35, 20, 28)
+CloseBtn.Text = "×"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 90, 120)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 18
+CloseBtn.Parent = Header
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 8)
+
+local OpenBtn = Instance.new("TextButton")
+OpenBtn.Size = UDim2.new(0, 42, 0, 42)
+OpenBtn.Position = UDim2.new(0, 18, 0.35, 0)
+OpenBtn.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+OpenBtn.Text = "n"
+OpenBtn.TextColor3 = Color3.fromRGB(255, 45, 85)
+OpenBtn.Font = Enum.Font.GothamBold
+OpenBtn.TextSize = 20
+OpenBtn.Visible = false
+OpenBtn.Parent = ScreenGui
+Instance.new("UICorner", OpenBtn).CornerRadius = UDim.new(0, 12)
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(255, 45, 85)
+stroke.Thickness = 1.5
+stroke.Parent = OpenBtn
+
+local function makeToggle(label, y, default, callback)
+    local holder = Instance.new("Frame")
+    holder.Size = UDim2.new(1, -24, 0, 34)
+    holder.Position = UDim2.new(0, 12, 0, y)
+    holder.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+    holder.BorderSizePixel = 0
+    holder.Parent = Main
+    Instance.new("UICorner", holder).CornerRadius = UDim.new(0, 8)
+
+    local text = Instance.new("TextLabel")
+    text.Size = UDim2.new(1, -60, 1, 0)
+    text.Position = UDim2.new(0, 12, 0, 0)
+    text.BackgroundTransparency = 1
+    text.Text = label
+    text.TextColor3 = Color3.fromRGB(230, 230, 235)
+    text.Font = Enum.Font.GothamMedium
+    text.TextSize = 13
+    text.TextXAlignment = Enum.TextXAlignment.Left
+    text.Parent = holder
+
+    local switch = Instance.new("Frame")
+    switch.Size = UDim2.new(0, 42, 0, 22)
+    switch.Position = UDim2.new(1, -52, 0.5, -11)
+    switch.BackgroundColor3 = default and Color3.fromRGB(255, 45, 85) or Color3.fromRGB(45, 45, 55)
+    switch.BorderSizePixel = 0
+    switch.Parent = holder
+    Instance.new("UICorner", switch).CornerRadius = UDim.new(1, 0)
+
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.new(0, 18, 0, 18)
+    knob.Position = default and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9)
+    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    knob.BorderSizePixel = 0
+    knob.Parent = switch
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+    local state = default
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 1, 0)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.Parent = holder
+
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        TweenService:Create(switch, TweenInfo.new(0.18), {
+            BackgroundColor3 = state and Color3.fromRGB(255, 45, 85) or Color3.fromRGB(45, 45, 55)
+        }):Play()
+        TweenService:Create(knob, TweenInfo.new(0.18), {
+            Position = state and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9)
+        }):Play()
+        callback(state)
+    end)
+end
+
+makeToggle("Master", 48, true, function(v) ESP.Enabled = v end)
+makeToggle("Box", 88, true, function(v) ESP.Box = v end)
+makeToggle("Tracer", 128, true, function(v) ESP.Tracer = v end)
+makeToggle("Name", 168, true, function(v) ESP.Name = v end)
+makeToggle("Distance", 208, true, function(v) ESP.Distance = v end)
+makeToggle("Team Check", 248, false, function(v) ESP.TeamCheck = v end)
+
+local function setGui(vis)
+    guiVisible = vis
+    Main.Visible = vis
+    OpenBtn.Visible = not vis
+end
+CloseBtn.MouseButton1Click:Connect(function() setGui(false) end)
+OpenBtn.MouseButton1Click:Connect(function() setGui(true) end)
+
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.RightControl then
+        ESP.Enabled = not ESP.Enabled
+    elseif input.KeyCode == Enum.KeyCode.RightShift then
+        setGui(not guiVisible)
+    end
+end)
+
+print("[noob_meansss] dual-mode loaded — Highlight fallback active")
